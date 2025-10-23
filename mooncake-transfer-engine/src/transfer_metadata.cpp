@@ -26,6 +26,15 @@
 
 namespace mooncake {
 
+// Helper function to parse connection string and extract protocol
+static inline std::string extractProtocolFromConnString(
+    const std::string &conn_string) {
+    std::size_t pos = conn_string.find("://");
+    if (pos != std::string::npos) {
+        return conn_string.substr(0, pos);
+    }
+    return "";
+}
 
 struct TransferNotifyUtil {
     static Json::Value encode(const TransferMetadata::NotifyDesc &desc) {
@@ -66,10 +75,10 @@ struct TransferHandshakeUtil {
 
 TransferMetadata::TransferMetadata(const std::string &conn_string) {
     next_segment_id_.store(1);
-    
+
     std::string protocol = extractProtocolFromConnString(conn_string);
     std::string custom_key;
-    
+
     if (protocol == "etcd") {
         const char *custom_prefix = std::getenv("MC_METADATA_KEY_PREFIX");
         if (custom_prefix != nullptr && strlen(custom_prefix) > 0) {
@@ -78,13 +87,14 @@ TransferMetadata::TransferMetadata(const std::string &conn_string) {
             if (!custom_key.empty() && custom_key.back() != '/') {
                 custom_key += '/';
             }
-            LOG(INFO) << "Using custom metadata key for etcd: mooncake/" << custom_key;
+            LOG(INFO) << "Using custom metadata key for etcd: mooncake/"
+                      << custom_key;
         }
     }
-    
+
     common_key_prefix_ = "mooncake/" + custom_key;
     rpc_meta_prefix_ = common_key_prefix_ + "rpc_meta/";
-    
+
     handshake_plugin_ = HandShakePlugin::Create(conn_string);
     if (!handshake_plugin_) {
         LOG(ERROR)
@@ -105,12 +115,14 @@ TransferMetadata::TransferMetadata(const std::string &conn_string) {
 
 TransferMetadata::~TransferMetadata() { handshake_plugin_.reset(); }
 
-std::string TransferMetadata::getFullMetadataKey(const std::string &segment_name) const {
+std::string TransferMetadata::getFullMetadataKey(
+    const std::string &segment_name) const {
     if (segment_name.empty()) {
-        LOG(WARNING) << "Empty segment_name provided to getFullMetadataKey";
+        LOG(WARNING)
+            << "Empty segment_name provided to getFullMetadataKey";
         return common_key_prefix_ + "ram/";
     }
-    
+
     auto pos = segment_name.find("/");
     if (pos == segment_name.npos) {
         // Simple segment name without path
@@ -761,11 +773,3 @@ int TransferMetadata::sendNotify(const std::string &peer_server_name,
 }
 
 }  // namespace mooncake
-
- std::string extractProtocolFromConnString(const std::string &conn_string) {
-    std::size_t pos = conn_string.find("://");
-    if (pos != std::string::npos) {
-        return conn_string.substr(0, pos);
-    }
-    return "";
-}
