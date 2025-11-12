@@ -1,0 +1,313 @@
+# Docker Compose 配置 - vLLM + LMCache + Mooncake 大模型测试
+# 支持 PD 分离和非 PD 分离两种部署模式
+
+version: '3.8'
+
+networks:
+  mooncake-test-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  models-data:
+    driver: local
+  cache-data:
+    driver: local
+  results-data:
+    driver: local
+
+services:
+  # ==========================================================================
+  # Mooncake Master 服务
+  # ==========================================================================
+  mooncake-master:
+    image: mooncake/mooncake:latest
+    container_name: mooncake-master
+    hostname: mooncake-master
+    networks:
+      mooncake-test-network:
+        ipv4_address: 172.28.0.10
+    ports:
+      - "50052:50052"  # Master gRPC port
+      - "8080:8080"    # Metadata HTTP port
+      - "9004:9004"    # Prometheus metrics port
+    volumes:
+      - cache-data:/data/cache
+      - ./logs:/logs
+    command: >
+      mooncake_master
+      -port 50052
+      -max_threads 64
+      -metrics_port 9004
+      --enable_http_metadata_server=true
+      --http_metadata_server_host=0.0.0.0
+      --http_metadata_server_port=8080
+    environment:
+      - MC_LOG_LEVEL=INFO
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # ==========================================================================
+  # PD 分离模式 - Prefiller 服务（用于 Prefill 阶段）
+  # ==========================================================================
+  vllm-prefiller:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-prefiller
+    hostname: vllm-prefiller
+    networks:
+      mooncake-test-network:
+        ipv4_address: 172.28.0.20
+    ports:
+      - "8100:8100"  # Prefiller API port
+    volumes:
+      - models-data:/data/models
+      - cache-data:/data/cache
+      - ./configs:/configs:ro
+      - ./logs:/logs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 8  # 使用 8 个 GPU（用于 72B 模型）
+              capabilities: [gpu]
+    environment:
+      - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+      - LMCACHE_CONFIG_FILE=/configs/mooncake-prefiller-config.yaml
+      - LMCACHE_USE_EXPERIMENTAL=True
+      - VLLM_ENABLE_V1_MULTIPROCESSING=1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - UCX_TLS=cuda_ipc,cuda_copy,tcp
+    command: >
+      vllm serve Qwen/Qwen2.5-72B-Instruct
+      --host 0.0.0.0
+      --port 8100
+      --tensor-parallel-size 8
+      --gpu-memory-utilization 0.9
+      --max-model-len 32768
+      --disable-log-requests
+    depends_on:
+      - mooncake-master
+    restart: unless-stopped
+    shm_size: '64gb'
+    ipc: host
+    # 如果需要 RDMA，添加以下配置
+    # privileged: true
+    # devices:
+    #   - /dev/infiniband:/dev/infiniband
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "3"
+
+  # ==========================================================================
+  # PD 分离模式 - Decoder 服务（用于 Decode 阶段）
+  # ==========================================================================
+  vllm-decoder:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-decoder
+    hostname: vllm-decoder
+    networks:
+      mooncake-test-network:
+        ipv4_address: 172.28.0.21
+    ports:
+      - "8200:8200"  # Decoder API port
+    volumes:
+      - models-data:/data/models
+      - cache-data:/data/cache
+      - ./configs:/configs:ro
+      - ./logs:/logs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 8  # 使用 8 个 GPU（用于 72B 模型）
+              capabilities: [gpu]
+    environment:
+      - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+      - LMCACHE_CONFIG_FILE=/configs/mooncake-decoder-config.yaml
+      - LMCACHE_USE_EXPERIMENTAL=True
+      - VLLM_ENABLE_V1_MULTIPROCESSING=1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - UCX_TLS=cuda_ipc,cuda_copy,tcp
+    command: >
+      vllm serve Qwen/Qwen2.5-72B-Instruct
+      --host 0.0.0.0
+      --port 8200
+      --tensor-parallel-size 8
+      --gpu-memory-utilization 0.9
+      --max-model-len 32768
+      --disable-log-requests
+    depends_on:
+      - mooncake-master
+    restart: unless-stopped
+    shm_size: '64gb'
+    ipc: host
+    # privileged: true  # 如果需要 RDMA
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "3"
+
+  # ==========================================================================
+  # PD 分离模式 - Proxy 服务（路由请求）
+  # ==========================================================================
+  vllm-proxy:
+    image: python:3.10-slim
+    container_name: vllm-proxy
+    hostname: vllm-proxy
+    networks:
+      mooncake-test-network:
+        ipv4_address: 172.28.0.22
+    ports:
+      - "9000:9000"  # Proxy API port
+    volumes:
+      - ./lmcache_proxy:/app
+      - ./logs:/logs
+    command: >
+      python /app/disagg_proxy_server.py
+      --host 0.0.0.0
+      --port 9000
+      --prefiller-host vllm-prefiller
+      --prefiller-port 8100
+      --decoder-host vllm-decoder
+      --decoder-port 8200
+    depends_on:
+      - vllm-prefiller
+      - vllm-decoder
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # ==========================================================================
+  # 非 PD 分离模式 - 单一 vLLM 服务
+  # ==========================================================================
+  vllm-server:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-server
+    hostname: vllm-server
+    networks:
+      mooncake-test-network:
+        ipv4_address: 172.28.0.30
+    ports:
+      - "8000:8000"  # vLLM API port
+    volumes:
+      - models-data:/data/models
+      - cache-data:/data/cache
+      - ./logs:/logs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 8  # 使用 8 个 GPU（用于 72B 模型）
+              capabilities: [gpu]
+    environment:
+      - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+    command: >
+      vllm serve Qwen/Qwen2.5-72B-Instruct
+      --host 0.0.0.0
+      --port 8000
+      --tensor-parallel-size 8
+      --gpu-memory-utilization 0.9
+      --max-model-len 32768
+      --disable-log-requests
+      --enable-prefix-caching
+    restart: unless-stopped
+    shm_size: '64gb'
+    ipc: host
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "3"
+    # 如果不需要 PD 分离测试，可以注释掉此服务
+    profiles:
+      - non-disagg
+
+  # ==========================================================================
+  # Prometheus 监控服务
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    hostname: prometheus
+    networks:
+      mooncake-test-network:
+        ipv4_address: 172.28.0.40
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "2"
+
+  # ==========================================================================
+  # Grafana 可视化服务
+  # ==========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    hostname: grafana
+    networks:
+      mooncake-test-network:
+        ipv4_address: 172.28.0.41
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana-data:/var/lib/grafana
+      - ./grafana-dashboard-cache-test.json:/etc/grafana/provisioning/dashboards/cache-test.json:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "2"
+
+  # ==========================================================================
+  # 测试客户端（可选）
+  # ==========================================================================
+  test-client:
+    image: python:3.10-slim
+    container_name: test-client
+    hostname: test-client
+    networks:
+      - mooncake-test-network
+    volumes:
+      - ./:/workspace
+      - results-data:/workspace/test_results
+    working_dir: /workspace
+    command: sleep infinity
+    depends_on:
+      - vllm-proxy
+      - vllm-server
+    profiles:
+      - test

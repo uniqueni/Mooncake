@@ -1,0 +1,372 @@
+# vLLM + LMCache + Mooncake 大模型缓存测试配置
+# 专用于 72B 和 671B 模型测试
+
+# =============================================================================
+# 测试模型配置
+# =============================================================================
+
+models:
+  # Qwen2.5-72B-Instruct 测试配置
+  qwen_72b:
+    name: "Qwen/Qwen2.5-72B-Instruct"
+    max_tokens: 128
+    temperature: 0.0
+    tensor_parallel_size: 8  # 需要 8 卡
+    gpu_memory_utilization: 0.9
+    max_model_len: 32768  # 最大上下文长度
+
+  # DeepSeek-R1-671B 测试配置
+  deepseek_671b:
+    name: "deepseek-ai/DeepSeek-R1-671B"
+    max_tokens: 128
+    temperature: 0.0
+    tensor_parallel_size: 64  # 需要 64 卡（8 nodes × 8 GPUs）
+    pipeline_parallel_size: 8
+    gpu_memory_utilization: 0.9
+    max_model_len: 16384
+
+# 当前测试使用的模型（切换这个值来改变测试模型）
+active_model: "qwen_72b"  # 或 "deepseek_671b"
+
+# =============================================================================
+# 部署模式配置
+# =============================================================================
+
+deployment_modes:
+  # 模式 1: PD 分离部署
+  pd_disaggregated:
+    enabled: true
+    description: "Prefill-Decode 分离架构，使用 LMCache + Mooncake"
+
+    # Prefiller 配置
+    prefiller:
+      host: "prefiller"  # Docker 容器名或 IP
+      port: 8100
+      num_instances: 1
+      gpu_allocation: "0,1,2,3,4,5,6,7"  # 8 GPUs for 72B
+
+    # Decoder 配置
+    decoder:
+      host: "decoder"  # Docker 容器名或 IP
+      port: 8200
+      num_instances: 1
+      gpu_allocation: "0,1,2,3,4,5,6,7"  # 8 GPUs for 72B
+
+    # Proxy 配置
+    proxy:
+      host: "proxy"
+      port: 9000
+
+  # 模式 2: 非 PD 分离部署（传统单服务）
+  non_disaggregated:
+    enabled: true
+    description: "传统部署模式，单个 vLLM 实例"
+
+    server:
+      host: "vllm-server"  # Docker 容器名或 IP
+      port: 8000
+      num_instances: 1
+      gpu_allocation: "0,1,2,3,4,5,6,7"  # 8 GPUs for 72B
+
+# =============================================================================
+# Mooncake 配置
+# =============================================================================
+
+mooncake:
+  # Master 服务配置
+  master:
+    host: "mooncake-master"  # Docker 容器名或 IP
+    port: 50052
+    metrics_port: 9004
+    metadata_port: 8080
+    max_threads: 64
+
+  # 传输配置
+  transfer:
+    protocol: "rdma"  # rdma 或 tcp
+    device_name: "mlx5_0,mlx5_1"  # 多个 RDMA 设备，逗号分隔
+    global_segment_size: 107374182400  # 100GB for 72B/671B
+    local_buffer_size: 2147483648  # 2GB
+    transfer_timeout: 10  # 大模型需要更长超时
+
+  # LMCache 配置
+  lmcache:
+    chunk_size: 256
+    remote_serde: "naive"
+    local_cpu: false
+    max_local_cpu_size: 100
+    save_chunk_meta: false
+
+# =============================================================================
+# 测试场景配置
+# =============================================================================
+
+test_scenarios:
+  # 场景 1: 长上下文高重用（RAG/文档分析）
+  long_context_high_reuse:
+    description: "长文档分析，多个问题共享相同的长上下文"
+    num_requests: 30
+    context_length: 16384  # 16k context
+    reuse_ratio: 0.9  # 90% 的请求共享上下文
+    prompt_template: |
+      以下是一份详细的技术文档（约16k tokens）：
+
+      {long_document}
+
+      基于上述文档，请回答问题 #{i}：{question}
+
+    # 生成长文档
+    long_document: |
+      [这里是一个长文档模板，包含技术规范、API 文档、代码示例等]
+      这部分会被重复使用在多个请求中...
+
+    questions:
+      - "请总结文档的核心要点"
+      - "文档中提到了哪些关键技术"
+      - "如何使用这些 API"
+      - "有哪些性能优化建议"
+      - "文档中的代码示例是什么意思"
+
+  # 场景 2: 代码生成场景
+  code_generation:
+    description: "代码生成任务，共享代码库上下文"
+    num_requests: 25
+    context_length: 8192  # 8k context
+    reuse_ratio: 0.8
+    prompt_template: |
+      你是一个专业的代码助手。以下是项目的代码库结构和关键代码：
+
+      {code_context}
+
+      任务 #{i}：{task}
+
+    code_context: |
+      # Project Structure
+      /src
+        /models
+          model.py
+          layers.py
+        /utils
+          helper.py
+        /train
+          trainer.py
+
+      # Key Functions
+      def train_model(...):
+          ...
+
+    tasks:
+      - "实现一个新的优化器"
+      - "添加分布式训练支持"
+      - "实现模型检查点保存"
+      - "添加性能监控代码"
+
+  # 场景 3: 多轮对话（聊天场景）
+  multi_turn_conversation:
+    description: "多轮对话，逐步累积上下文"
+    num_requests: 40
+    reuse_ratio: 0.85
+    prompt_template: |
+      {conversation_history}
+
+      User: {user_message}
+      Assistant:
+
+    # 对话历史会逐步增长
+    conversation_turns:
+      - "请介绍一下大语言模型的基本原理"
+      - "Transformer 架构是如何工作的"
+      - "注意力机制的具体实现是怎样的"
+      - "如何进行模型训练和优化"
+      - "推理阶段有哪些优化技术"
+
+  # 场景 4: 批量翻译/摘要
+  batch_processing:
+    description: "批量处理任务，共享指令模板"
+    num_requests: 50
+    reuse_ratio: 0.95  # 超高重用率
+    prompt_template: |
+      你是一个专业的翻译助手。请将以下英文翻译成中文，保持专业性和准确性：
+
+      [大量翻译规则和示例 - 这部分在所有请求中共享]
+
+      Text to translate #{i}:
+      {text}
+
+  # 场景 5: 冷启动场景（无缓存重用）
+  cold_start:
+    description: "冷启动场景，每个请求都是唯一的"
+    num_requests: 20
+    reuse_ratio: 0.0
+    prompt_template: |
+      这是一个完全独特的问题 #{i}，没有任何共享上下文：
+      {unique_content}
+
+# =============================================================================
+# 性能测试配置
+# =============================================================================
+
+performance_test:
+  # 测试轮数
+  rounds: 2  # 第一轮 cold start，第二轮 cache hit
+
+  # 并发配置
+  concurrency:
+    min: 1
+    max: 10
+    step: 1
+    # 测试不同并发级别：1, 2, 3, ..., 10
+
+  # 预热配置
+  warmup:
+    enabled: true
+    num_requests: 5
+
+  # 测试持续时间（秒）
+  duration: null  # null 表示运行固定数量的请求
+
+  # 性能目标（用于判断测试是否成功）
+  targets:
+    # PD 分离模式的目标
+    pd_disaggregated:
+      cache_hit_ttft_reduction: 60  # TTFT 降低至少 60%
+      cache_hit_throughput_increase: 150  # 吞吐量提升至少 150%
+      max_p99_latency_ms: 5000  # P99 延迟不超过 5 秒
+
+    # 非 PD 分离模式的目标
+    non_disaggregated:
+      baseline_ttft_ms: 3000  # 基线 TTFT
+      baseline_throughput: 5  # 基线吞吐量 req/s
+      max_p99_latency_ms: 8000
+
+# =============================================================================
+# 监控和日志配置
+# =============================================================================
+
+monitoring:
+  # Prometheus 配置
+  prometheus:
+    enabled: true
+    url: "http://prometheus:9090"
+    scrape_interval: 5
+
+  # Grafana 配置
+  grafana:
+    enabled: true
+    url: "http://grafana:3000"
+
+  # 采集的指标
+  metrics:
+    mooncake:
+      - "master_key_count"
+      - "master_allocated_bytes"
+      - "master_put_start_requests_total"
+      - "master_get_replica_list_requests_total"
+      - "rate(master_put_start_requests_total[1m])"
+      - "rate(master_get_replica_list_requests_total[1m])"
+
+    vllm:
+      - "vllm:num_requests_running"
+      - "vllm:num_requests_waiting"
+      - "vllm:gpu_cache_usage_perc"
+      - "vllm:time_to_first_token_seconds"
+      - "vllm:time_per_output_token_seconds"
+
+  # 日志配置
+  logging:
+    level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+    format: "json"  # json 或 text
+    output:
+      console: true
+      file: true
+      file_path: "logs/test_{timestamp}.log"
+
+# =============================================================================
+# 输出配置
+# =============================================================================
+
+output:
+  # 结果保存目录
+  results_dir: "test_results"
+  reports_dir: "reports"
+
+  # 保存详细结果
+  save_detailed: true
+
+  # 生成报告
+  generate_reports:
+    html: true
+    markdown: true
+    pdf: false
+
+  # 生成图表
+  generate_charts: true
+
+  # 导出原始数据
+  export_raw_data: true
+  export_format: "json"  # json, csv, parquet
+
+# =============================================================================
+# Docker 配置
+# =============================================================================
+
+docker:
+  # 容器网络
+  network_name: "mooncake-test-network"
+
+  # 镜像配置
+  images:
+    vllm: "vllm/vllm-openai:latest"
+    mooncake: "mooncake/mooncake:latest"
+    prometheus: "prom/prometheus:latest"
+    grafana: "grafana/grafana:latest"
+
+  # 卷挂载
+  volumes:
+    models: "/data/models"  # 模型文件路径
+    cache: "/data/cache"    # 缓存目录
+    results: "./test_results"  # 结果目录
+
+  # 资源限制
+  resources:
+    # 72B 模型的资源配置
+    qwen_72b:
+      cpus: "64"
+      memory: "512g"
+      shm_size: "64g"
+
+    # 671B 模型的资源配置（每个节点）
+    deepseek_671b:
+      cpus: "64"
+      memory: "1024g"
+      shm_size: "128g"
+
+# =============================================================================
+# 高级配置
+# =============================================================================
+
+advanced:
+  # 自动调优
+  auto_tuning:
+    enabled: false
+    parameters:
+      - "chunk_size"
+      - "global_segment_size"
+      - "tensor_parallel_size"
+
+  # 故障注入（可选）
+  fault_injection:
+    enabled: false
+    scenarios:
+      - "network_delay"
+      - "gpu_failure"
+      - "cache_miss"
+
+  # A/B 测试
+  ab_testing:
+    enabled: true
+    compare:
+      - name: "PD Disaggregated"
+        mode: "pd_disaggregated"
+      - name: "Non-Disaggregated"
+        mode: "non_disaggregated"

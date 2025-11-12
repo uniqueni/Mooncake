@@ -1,0 +1,23 @@
+# 简化版多场景测试配置
+# 适合快速测试，只包含核心场景
+
+output_dir: "test_results_multi"
+clear_cache_between_scenarios: true
+wait_between_scenarios: 10
+
+mooncake:
+  # 替换为你的 Mooncake metadata server URL
+  metadata_server_url: "http://YOUR_MASTER_IP:8080/metadata"
+
+test_scenarios:
+  # 场景 1: 单机测试
+  - name: "单机多卡-Qwen2.5-72B"
+    config_file: "test_config_simple.yaml"
+    scenario: "long_context_high_reuse"
+    rounds: 2
+
+  # 场景 2: 跨节点测试（如果有）
+  # - name: "跨节点-Qwen2.5-72B"
+  #   config_file: "test_config_cross_node.yaml"
+  #   scenario: "long_context_high_reuse"
+  #   rounds: 2

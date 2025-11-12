@@ -1,0 +1,98 @@
+# 多场景测试配置文件
+#
+# 用于批处理运行多个独立的测试场景，每个场景完全隔离。
+
+# 输出目录
+output_dir: "test_results_multi"
+
+# 场景间是否清理缓存（强烈推荐开启，确保每个场景的 Round 1 都是真正的 Cold Start）
+clear_cache_between_scenarios: true
+
+# 场景间等待时间（秒）- 用于系统稳定和缓存清理
+wait_between_scenarios: 10
+
+# Mooncake 配置（用于清理缓存）
+mooncake:
+  # Mooncake metadata server URL（用于清理缓存）
+  # 如果不支持 API 清理，可以在场景间手动重启 vLLM 服务
+  metadata_server_url: "http://10.237.65.81:8080/metadata"
+
+# 测试场景列表
+test_scenarios:
+  # ========== 腾讯云测试 ==========
+
+  # 场景 1: 腾讯云 - 单机多卡 - Qwen2.5-72B
+  - name: "腾讯云-单机多卡-Qwen2.5-72B"
+    config_file: "test_config_tencent_qwen_single.yaml"
+    scenario: "long_context_high_reuse"  # 测试场景类型
+    rounds: 2  # 测试轮次
+    concurrency: 5  # 可选：并发数
+
+  # 场景 2: 腾讯云 - 跨节点 - Qwen2.5-72B
+  - name: "腾讯云-跨节点-Qwen2.5-72B"
+    config_file: "test_config_tencent_qwen_cross.yaml"
+    scenario: "long_context_high_reuse"
+    rounds: 2
+
+  # 场景 3: 腾讯云 - 单机多卡 - Deepseek-R1
+  - name: "腾讯云-单机多卡-Deepseek-R1"
+    config_file: "test_config_tencent_deepseek_single.yaml"
+    scenario: "long_context_high_reuse"
+    rounds: 2
+
+  # 场景 4: 腾讯云 - 跨节点 - Deepseek-R1
+  - name: "腾讯云-跨节点-Deepseek-R1"
+    config_file: "test_config_tencent_deepseek_cross.yaml"
+    scenario: "long_context_high_reuse"
+    rounds: 2
+
+  # ========== 火山云测试 ==========
+
+  # 场景 5: 火山云 - 单机多卡 - Qwen2.5-72B
+  - name: "火山云-单机多卡-Qwen2.5-72B"
+    config_file: "test_config_volcano_qwen_single.yaml"
+    scenario: "long_context_high_reuse"
+    rounds: 2
+
+  # 场景 6: 火山云 - 跨节点 - Qwen2.5-72B
+  - name: "火山云-跨节点-Qwen2.5-72B"
+    config_file: "test_config_volcano_qwen_cross.yaml"
+    scenario: "long_context_high_reuse"
+    rounds: 2
+
+  # ========== 更多场景示例 ==========
+
+  # 你可以继续添加更多场景...
+  #
+  # - name: "阿里云-单机-Llama3-70B"
+  #   config_file: "test_config_aliyun_llama.yaml"
+  #   scenario: "multi_turn_conversation"
+  #   rounds: 2
+  #   concurrency: 10
+
+# ========== 配置说明 ==========
+#
+# name: 场景名称，用于报告中标识（建议格式：<平台>-<部署方式>-<模型>）
+# config_file: 该场景使用的测试配置文件（相对于 simple_test/ 目录）
+# scenario: 测试场景类型，可选值：
+#   - long_context_high_reuse: 长上下文高重用（推荐）
+#   - multi_turn_conversation: 多轮对话
+#   - code_generation: 代码生成
+#   - batch_processing: 批量处理
+#   - cold_start: 冷启动基线
+# rounds: 测试轮次（通常是 2，Round 1 = Cold Start, Round 2 = Cache Hit）
+# concurrency: 可选，并发请求数
+#
+# ========== 清理缓存说明 ==========
+#
+# clear_cache_between_scenarios: true 时，会在场景间尝试清理 Mooncake 缓存。
+#
+# 清理方法：
+# 1. 如果 Mooncake 提供 metadata API 的 /clear 接口，会自动调用
+# 2. 如果没有 API，建议在场景间手动重启 vLLM 服务
+# 3. 或者设置 wait_between_scenarios 足够长（如 30s），等待缓存自动过期
+#
+# 为什么需要清理？
+# - 确保每个场景的 Round 1 都是真正的 Cold Start
+# - 避免场景 A 的缓存污染场景 B 的测试结果
+# - 获得准确的缓存效果对比数据

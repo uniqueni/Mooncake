@@ -1,0 +1,173 @@
+# 跨节点 KV Cache 传输测试配置
+#
+# 这个配置用于测试跨节点的 KV Cache 共享：
+# - Round 1: 请求发到副本 A（Node 1），KV Cache 存储到 Mooncake
+# - Round 2: 请求发到副本 B（Node 2），从 Mooncake 加载 KV Cache
+#
+# 这样可以验证：
+# 1. Mooncake 的分布式 KV Cache 存储
+# 2. 跨节点的 KV Cache 传输
+# 3. LMCache 的跨实例共享能力
+
+# =============================================================================
+# OpenAI 兼容接口配置
+# =============================================================================
+openai_api:
+  # 默认 API 地址（如果未配置 endpoints_per_round，使用此地址）
+  base_url: "http://10.237.65.81:8080/v1"
+  api_key: "dummy"
+
+  # 模型名称（所有副本必须使用相同的模型）
+  model_name: "Qwen2.5-72B-Instruct"
+
+  # 跨节点测试配置
+  # ⚠️  重要：修改为你的实际副本地址
+  endpoints_per_round:
+    # Round 1: 使用 Node 1 的副本（存储 KV Cache 到 Mooncake）
+    1: "http://10.237.65.81:8080/v1"
+
+    # Round 2: 使用 Node 2 的副本（从 Mooncake 加载 KV Cache）
+    2: "http://10.237.65.95:8080/v1"
+
+    # 如果有更多轮次，可以继续添加：
+    # 3: "http://192.168.1.102:8000/v1"
+
+# =============================================================================
+# Mooncake 配置
+# =============================================================================
+mooncake:
+  # Mooncake Master 地址（所有副本必须连接到同一个 Master）
+  master_ip: "s-20251110120715-xfv4ub.aistudio-kic"
+  master_port: 50001
+  metadata_port: 8080
+  metrics_port: 9003
+
+  prometheus_url: "http://s-20251110120715-xfv4ub.aistudio-kic:9003"
+
+# =============================================================================
+# 测试模型配置
+# =============================================================================
+model:
+  name: "Qwen2.5-72B-Instruct"
+  max_tokens: 128
+  temperature: 0.0
+  size: "72B"
+
+# =============================================================================
+# 测试场景配置
+# =============================================================================
+test_scenarios:
+  # 长上下文高重用（最适合测试跨节点 KV Cache 传输）
+  long_context_high_reuse:
+    description: "长文档分析，多个问题共享相同的长上下文"
+    num_requests: 30
+    context_length: 16384  # 16k tokens
+    reuse_ratio: 0.9  # 90% 重用率
+    questions:
+      - "请总结文档的核心要点"
+      - "文档中提到了哪些关键技术"
+      - "如何应用这些技术"
+      - "有哪些性能优化建议"
+      - "文档的主要结论是什么"
+
+  # 多轮对话
+  multi_turn_conversation:
+    description: "模拟多轮对话，逐步累积上下文"
+    num_requests: 40
+    reuse_ratio: 0.85
+    conversation_turns:
+      - "请介绍一下大语言模型的基本原理"
+      - "Transformer 架构是如何工作的"
+      - "注意力机制的具体实现是什么"
+      - "如何进行模型训练"
+      - "推理阶段有哪些优化技术"
+
+  # 场景 3: 代码生成
+  code_generation:
+    description: "代码生成任务，共享代码库上下文"
+    num_requests: 25
+    context_length: 8192
+    reuse_ratio: 0.8
+    tasks:
+      - "实现一个新的优化器"
+      - "添加分布式训练支持"
+      - "实现模型检查点保存"
+      - "添加性能监控代码"
+
+  # 场景 4: 批量处理
+  batch_processing:
+    description: "批量处理任务，共享指令模板"
+    num_requests: 50
+    reuse_ratio: 0.95
+    instruction_length: 1500  # 指令模板长度
+
+  # 场景 5: 冷启动（无缓存重用）
+  cold_start:
+    description: "冷启动场景，每个请求都是唯一的"
+    num_requests: 20
+    reuse_ratio: 0.0
+    content_length: 2000
+
+
+# =============================================================================
+# 测试执行配置
+# =============================================================================
+test_execution:
+  # 测试轮数（必须 >= 2 才能测试跨节点传输）
+  rounds: 2
+
+  # 默认测试场景
+  default_scenarios:
+    - long_context_high_reuse
+
+  # 并发配置
+  concurrency: null
+
+  # 轮次间等待时间（秒）- 给 Mooncake 一些时间完成存储
+  wait_between_rounds: 5
+
+  request_timeout: 300
+
+# =============================================================================
+# 性能目标
+# =============================================================================
+performance_targets:
+  cache_hit:
+    ttft_reduction_percent: 60
+    throughput_increase_percent: 150
+
+  warning:
+    ttft_reduction_percent: 30
+    throughput_increase_percent: 50
+
+# =============================================================================
+# 输出配置
+# =============================================================================
+output:
+  results_dir: "test_results_cross_node"
+  reports_dir: "reports_cross_node"
+  save_detailed: true
+  auto_generate_report: true
+  report_formats:
+    - markdown
+  generate_charts: true
+
+# =============================================================================
+# 监控配置
+# =============================================================================
+monitoring:
+  enabled: true
+  interval: 5
+  mooncake_metrics:
+    - "master_key_count"
+    - "master_allocated_bytes"
+    - "master_put_start_requests_total"
+    - "master_get_replica_list_requests_total"
+
+# =============================================================================
+# 日志配置
+# =============================================================================
+logging:
+  level: "INFO"
+  log_file: "logs/test_cross_node_{timestamp}.log"
+  console_output: true

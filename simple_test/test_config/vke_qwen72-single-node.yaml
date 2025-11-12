@@ -1,0 +1,182 @@
+# 简化测试配置 - 用于已有 Mooncake 和 OpenAI 接口的场景
+
+# =============================================================================
+# OpenAI 兼容接口配置
+# =============================================================================
+openai_api:
+  # 你的 OpenAI 兼容接口地址
+  base_url: "http://10.237.65.93:8080/v1"  # 替换为你的实际地址
+  api_key: "dummy"  # 如果你的接口不需要 API key，保持 dummy 即可
+
+  # 模型名称（必须和你的接口返回的模型名一致）
+  model_name: "Qwen2.5-72B-Instruct"  # 或你使用的其他模型
+
+
+# =============================================================================
+# Mooncake 配置（用于监控和验证）
+# =============================================================================
+mooncake:
+  # Mooncake Master 地址（所有副本必须连接到同一个 Master）
+  master_ip: "s-20251110120715-xfv4ub.aistudio-kic"
+  master_port: 50001
+  metadata_port: 8080
+  metrics_port: 9003
+  prometheus_url: "http://s-20251110120715-xfv4ub.aistudio-kic:9003"
+
+# =============================================================================
+# 测试模型配置
+# =============================================================================
+model:
+  # 模型名称（和 openai_api.model_name 保持一致）
+  name: "Qwen2.5-72B-Instruct"
+
+  # 生成参数
+  max_tokens: 128  # 每个请求生成的最大 token 数
+  temperature: 0.0  # 温度（0.0 = 确定性输出）
+
+  # 模型大小（用于估算性能）
+  size: "72B"  # 或 "671B"
+
+# =============================================================================
+# 测试场景配置
+# =============================================================================
+test_scenarios:
+  # 场景 1: 长上下文高重用
+  long_context_high_reuse:
+    description: "长文档分析，多个问题共享相同的长上下文"
+    num_requests: 10
+    context_length: 4096  # 16k tokens
+    reuse_ratio: 0.9  # 90% 重用率
+    questions:
+      - "请总结文档的核心要点"
+      - "文档中提到了哪些关键技术"
+      - "如何应用这些技术"
+      - "有哪些性能优化建议"
+      - "文档的主要结论是什么"
+
+  # 场景 2: 多轮对话
+  multi_turn_conversation:
+    description: "模拟多轮对话，逐步累积上下文"
+    num_requests: 10
+    reuse_ratio: 0.85
+    conversation_turns:
+      - "请介绍一下大语言模型的基本原理"
+      - "Transformer 架构是如何工作的"
+      - "注意力机制的具体实现是什么"
+      - "如何进行模型训练"
+      - "推理阶段有哪些优化技术"
+
+  # 场景 3: 代码生成
+  code_generation:
+    description: "代码生成任务，共享代码库上下文"
+    num_requests: 10
+    context_length: 4096
+    reuse_ratio: 0.8
+    tasks:
+      - "实现一个新的优化器"
+      - "添加分布式训练支持"
+      - "实现模型检查点保存"
+      - "添加性能监控代码"
+
+  # 场景 4: 批量处理
+  batch_processing:
+    description: "批量处理任务，共享指令模板"
+    num_requests: 10
+    reuse_ratio: 0.95
+    instruction_length: 1500  # 指令模板长度
+
+  # 场景 5: 冷启动（无缓存重用）
+  cold_start:
+    description: "冷启动场景，每个请求都是唯一的"
+    num_requests: 10
+    reuse_ratio: 0.0
+    content_length: 2000
+
+# =============================================================================
+# 测试执行配置
+# =============================================================================
+test_execution:
+  # 默认测试轮数
+  rounds: 2  # Round 1: Cold Start, Round 2: Cache Hit
+
+  # 默认测试场景
+  default_scenarios:
+    - long_context_high_reuse
+#    - multi_turn_conversation
+
+  # 并发配置
+  concurrency: null  # null = 不限制，或设置为数字如 5
+
+  # 轮次间等待时间（秒）
+  wait_between_rounds: 10
+
+  # 请求超时（秒）
+  request_timeout: 300  # 5 分钟（大模型需要更长时间）
+
+# =============================================================================
+# 性能目标
+# =============================================================================
+performance_targets:
+  # 缓存命中后的性能改善目标
+  cache_hit:
+    ttft_reduction_percent: 60  # TTFT 降低至少 60%
+    throughput_increase_percent: 150  # 吞吐量提升至少 150%
+
+  # 警告阈值
+  warning:
+    ttft_reduction_percent: 30  # 低于 30% 发出警告
+    throughput_increase_percent: 50
+
+# =============================================================================
+# 输出配置
+# =============================================================================
+output:
+  # 结果保存目录
+  results_dir: "test_results"
+
+  # 报告目录
+  reports_dir: "reports"
+
+  # 保存详细结果
+  save_detailed: true
+
+  # 自动生成报告
+  auto_generate_report: true
+
+  # 报告格式
+  report_formats:
+    - markdown
+    - html
+
+  # 生成图表
+  generate_charts: true
+
+# =============================================================================
+# 监控配置（可选）
+# =============================================================================
+monitoring:
+  # 是否启用监控
+  enabled: true
+
+  # 监控间隔（秒）
+  interval: 5
+
+  # 要监控的 Mooncake 指标
+  mooncake_metrics:
+    - "master_key_count"
+    - "master_allocated_bytes"
+    - "master_put_start_requests_total"
+    - "master_get_replica_list_requests_total"
+
+# =============================================================================
+# 日志配置
+# =============================================================================
+logging:
+  # 日志级别
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+
+  # 日志文件
+  log_file: "logs/test_{timestamp}.log"
+
+  # 控制台输出
+  console_output: true

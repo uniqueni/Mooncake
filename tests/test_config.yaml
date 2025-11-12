@@ -1,0 +1,175 @@
+# vLLM + LMCache + Mooncake 测试配置文件
+
+# Proxy 服务器配置
+proxy:
+  url: "http://localhost:9000/v1"  # disagg_proxy_server 的地址
+
+# 模型配置
+model:
+  name: "Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4"  # 使用的模型名称
+  max_tokens: 64  # 每个请求生成的最大 token 数
+  temperature: 0.0  # 温度参数，0.0 表示确定性输出
+
+# 机器配置（用于文档和脚本生成）
+machines:
+  machine_a:  # Decoder 节点
+    ip: "192.168.80.135"
+    decoder_port: 8200
+    master_port: 50052
+    metadata_port: 8080
+    metrics_port: 9004
+    gpu_devices: "0,1"  # 使用的 GPU 设备
+
+  machine_b:  # Prefiller 节点
+    ip: "192.168.80.136"
+    prefiller_port: 8100
+    gpu_devices: "0,1"
+
+# Mooncake 配置
+mooncake:
+  protocol: "rdma"  # 传输协议: tcp, rdma
+  device_name: "mlx5_0"  # RDMA 设备名称，多个设备用逗号分隔
+  global_segment_size: 32212254720  # 30GB
+  local_buffer_size: 1073741824  # 1GB
+  transfer_timeout: 1  # 传输超时时间（秒）
+  chunk_size: 256  # LMCache chunk 大小
+
+# 测试场景配置
+test_scenarios:
+  # 场景1: 高缓存重用率 - 所有请求共享相同的长前缀
+  high_reuse:
+    num_requests: 50
+    reuse_ratio: 1.0  # 100% 重用
+    prompt_template: |
+      你是一个专业的代码审查助手。请分析以下代码的时间复杂度、空间复杂度和潜在的性能问题：
+
+      ```python
+      def bubble_sort(arr):
+          n = len(arr)
+          for i in range(n):
+              for j in range(0, n-i-1):
+                  if arr[j] > arr[j+1]:
+                      arr[j], arr[j+1] = arr[j+1], arr[j]
+          return arr
+
+      def quick_sort(arr):
+          if len(arr) <= 1:
+              return arr
+          pivot = arr[len(arr) // 2]
+          left = [x for x in arr if x < pivot]
+          middle = [x for x in arr if x == pivot]
+          right = [x for x in arr if x > pivot]
+          return quick_sort(left) + middle + quick_sort(right)
+      ```
+
+      请详细说明上述代码的算法复杂度，并提供优化建议。
+      任务编号: {i}
+
+  # 场景2: 中等缓存重用率 - 部分请求共享前缀
+  medium_reuse:
+    num_requests: 50
+    reuse_ratio: 0.5  # 50% 重用
+    prompt_template: |
+      问题类别 {i}: 请详细解释以下概念及其在实际应用中的使用场景：
+
+      {'机器学习中的过拟合和欠拟合问题' if i % 2 == 0 else '深度学习中的梯度消失和梯度爆炸问题'}
+
+      具体问题 {req}: 请从以下角度进行分析：
+      1. 定义和特征
+      2. 产生原因
+      3. 检测方法
+      4. 解决方案
+      5. 实际案例
+
+  # 场景3: 低缓存重用率 - 每个请求都是唯一的
+  low_reuse:
+    num_requests: 50
+    reuse_ratio: 0.0  # 0% 重用
+    prompt_template: |
+      这是一个独特的问题 #{i}。请回答以下问题：
+
+      在分布式系统中，如何设计一个高可用的缓存系统？请考虑以下方面：
+      - 缓存一致性策略（编号 {i}）
+      - 缓存淘汰算法（场景 {i}）
+      - 缓存穿透和雪崩的防护（实例 {i}）
+      - 分布式缓存的数据分片和路由（版本 {i}）
+
+      请针对具体场景 {i} 给出详细的设计方案。
+
+  # 场景4: 长上下文测试
+  long_context:
+    num_requests: 20
+    context_length: 8192  # 约 8k tokens 的上下文
+    reuse_ratio: 0.8  # 80% 的请求共享相同的长上下文
+    prompt_template: |
+      基于上述长篇文档，请回答问题 {i}：这段文本的核心主题是什么？
+
+# 基准测试配置
+benchmark:
+  # 每轮测试之间的等待时间（秒）
+  round_wait_seconds: 5
+
+  # 默认测试轮数
+  default_rounds: 2
+
+  # 并发控制
+  default_concurrency: null  # null 表示不限制，或设置为数字如 10
+
+# 结果输出配置
+output:
+  # 结果保存目录
+  results_dir: "test_results"
+
+  # 是否保存详细的每个请求的结果
+  save_detailed_results: true
+
+  # 是否生成 HTML 报告
+  generate_html_report: true
+
+# Prometheus 监控配置
+prometheus:
+  # Prometheus 服务器地址
+  url: "http://192.168.80.135:9090"
+
+  # 要查询的指标
+  metrics:
+    - name: "master_key_count"
+      description: "KV Cache 键总数"
+
+    - name: "master_allocated_bytes"
+      description: "已分配内存（字节）"
+
+    - name: "master_put_start_requests_total"
+      description: "Put 请求总数"
+
+    - name: "master_get_replica_list_requests_total"
+      description: "Get 请求总数"
+
+    - name: "rate(master_put_start_requests_total[5m])"
+      description: "Put 请求 QPS (5分钟)"
+
+    - name: "rate(master_get_replica_list_requests_total[5m])"
+      description: "Get 请求 QPS (5分钟)"
+
+# Grafana 配置
+grafana:
+  # Grafana 服务器地址
+  url: "http://localhost:3000"
+
+  # API Token（可选，用于自动创建 dashboard）
+  api_token: ""
+
+  # Dashboard UID
+  dashboard_uid: "mooncake-cache-test"
+
+# 预期性能基准（用于判断测试是否成功）
+expected_performance:
+  # Cache Hit 相比 Cold Start 的改善
+  cache_hit_improvement:
+    latency_reduction_percent: 60  # 延迟降低至少 60%
+    throughput_increase_percent: 180  # 吞吐量提升至少 180%
+
+  # 警告阈值
+  warning_thresholds:
+    latency_reduction_percent: 30  # 延迟降低低于 30% 时发出警告
+    throughput_increase_percent: 50  # 吞吐量提升低于 50% 时发出警告
